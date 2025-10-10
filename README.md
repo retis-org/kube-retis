@@ -73,41 +73,47 @@ This tool automates the deployment and execution of RETIS (Real-time Traffic Ins
 
 ```bash
 # Preview RETIS collection (default dry-run mode)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*"
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'"
 
 # Actually execute RETIS collection (use --start)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --start
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'" --start
 
 # Filter nodes running specific workloads
-python3 arc.py --kubeconfig ~/.kube/config --workload-filter "ovn" --start
+python3 arc.py --kubeconfig ~/.kube/config --workload-filter "ovn" --retis-command "collect -o network.json -f 'tcp'" --start
 
 # Combine both filters
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --workload-filter "networking" --start
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --workload-filter "networking" --retis-command "collect -o net.json -f 'tcp'" --start
 
 # Use without kubeconfig argument (will prompt)
-python3 arc.py --node-filter "worker-2*" --start
+python3 arc.py --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 443'" --start
 ```
 
 ### Advanced Usage
 
 ```bash
-# Custom RETIS image and version
-python3 arc.py --kubeconfig ~/.kube/config --retis-image "registry.example.com/retis:custom" --retis-tag "v1.6.0" --start
+# Custom RETIS image and version (repository and tag specified separately)
+python3 arc.py --kubeconfig ~/.kube/config --retis-image "registry.example.com/retis" --retis-tag "v1.6.0" --retis-command "collect -o events.json -f 'tcp port 80'" --start
 
 # Custom working directory
-python3 arc.py --kubeconfig ~/.kube/config --working-directory "/tmp/retis" --start
+python3 arc.py --kubeconfig ~/.kube/config --working-directory "/tmp/retis" --retis-command "collect -o events.json -f 'tcp'" --start
 
 # Parallel execution on multiple nodes
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --parallel --start
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --parallel --start
 
 # Explicit dry run (redundant with default, but clear)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --dry-run
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --dry-run
 
-# Custom RETIS command (full control)
+# Custom RETIS command (full control) - MUST include -o parameter
 python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
 
 # RETIS profile command (different from collect)
 python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
+
+# Utility operations (no --retis-command needed)
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --stop
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --reset-failed
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results
+python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results --output-file custom.json
 ```
 
 ### Utility Operations (Execute Immediately)
@@ -145,21 +151,11 @@ python3 arc.py --kubeconfig ~/.kube/config --download-results --dry-run
 ### RETIS Configuration
 | Argument | Short | Description | Default |
 |----------|--------|-------------|---------|
-| `--retis-image` | | RETIS container image to use | `image-registry.openshift-image-registry.svc:5000/default/retis` |
+| `--retis-image` | | RETIS container image repository (without tag) | `quay.io/retis/retis` |
 | `--retis-tag` | | RETIS version tag to use | `v1.5.2` |
-| `--retis-command` | | Complete RETIS command string (overrides other options) | None |
+| `--retis-command` | | **REQUIRED for collection**: Complete RETIS command string. Must include `-o <filename>`. Not needed for utility operations. | None |
+| `--output-file` | `-o` | Output file name for utility operations (e.g., --download-results) | `events.json` |
 | `--working-directory` | | Working directory for RETIS collection | `/var/tmp` |
-| `--output-file` | `-o` | Output file name for RETIS collection | `events.json` |
-| `--filter-packet` | | Packet filter expression | `tcp port 8080 or tcp port 8081` |
-| `--retis-extra-args` | | Additional arguments for retis collect command | None |
-
-### RETIS Flags (Enabled by Default)
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--allow-system-changes` / `--no-allow-system-changes` | Allow/disallow system changes | Enabled |
-| `--ovs-track` / `--no-ovs-track` | Enable/disable OVS tracking | Enabled |
-| `--stack` / `--no-stack` | Enable/disable stack trace collection | Enabled |
-| `--probe-stack` / `--no-probe-stack` | Enable/disable probe stack collection | Enabled |
 
 ### Operations
 | Argument | Description | Execution |
@@ -297,13 +293,13 @@ python3 arc.py --kubeconfig ~/.kube/config --stop --dry-run
 Download all `events.json` files from filtered nodes with automatic naming:
 
 ```bash
-# Download from all nodes
+# Download from all nodes (default: events.json)
 python3 arc.py --kubeconfig ~/.kube/config --download-results
 
 # Download from specific nodes only
 python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results
 
-# Custom output file name
+# Download specific output file name
 python3 arc.py --kubeconfig ~/.kube/config --output-file "trace.json" --download-results
 ```
 
@@ -317,7 +313,7 @@ python3 arc.py --kubeconfig ~/.kube/config --output-file "trace.json" --download
 Take full control over RETIS execution with `--retis-command`:
 
 ```bash
-# Custom collect command
+# Custom collect command (must include -o parameter)
 python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
 
 # RETIS profile instead of collect
@@ -432,6 +428,12 @@ pip install "kubernetes>=30.0.0" "urllib3>=2.0.0"
 - Check node availability and resource constraints
 - Verify image registry access (default: `registry.redhat.io/ubi8/ubi:latest`)
 - Increase timeout if needed for slow clusters
+
+**"Error: invalid reference format"**
+- This usually means the image reference is malformed
+- Common cause: including tag in `--retis-image` (e.g., `--retis-image quay.io/retis/retis:latest`)
+- **Correct usage**: `--retis-image quay.io/retis/retis --retis-tag latest`
+- The script will auto-fix this and show a warning
 
 ### Debug Tips
 

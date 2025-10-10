@@ -200,12 +200,31 @@ class KubernetesDebugPodManager:
                 _request_timeout=timeout
             )
             
-            # For the stream API, we need to capture both stdout and stderr
-            # The response contains both stdout and stderr mixed
-            stdout = resp
+            # For now, treat all output as stdout
+            # The stream API doesn't separate stdout/stderr reliably in this simple mode
+            stdout = resp if resp else ""
             stderr = ""
             
-            return True, stdout, stderr
+            # Try to detect errors in the output
+            # If the output contains common error patterns, treat it as a failure
+            error_patterns = [
+                "No such file or directory",
+                "Permission denied",
+                "command not found",
+                "cannot access",
+                "Operation not permitted"
+            ]
+            
+            success = True
+            if stdout:
+                for pattern in error_patterns:
+                    if pattern in stdout:
+                        success = False
+                        stderr = stdout
+                        stdout = ""
+                        break
+            
+            return success, stdout, stderr
             
         except Exception as e:
             error_msg = f"Command execution failed: {e}"
@@ -249,19 +268,92 @@ class KubernetesDebugPodManager:
                 if not success:
                     print(f"⚠ Warning: Failed to create directory {dir_path}")
             
-            # Use base64 encoding to transfer the file
+            # Use a more reliable file transfer approach
             import base64
+            import tempfile
+            
+            # Create a temporary file path in the pod (not on host)
+            import time
+            temp_file_in_pod = f"/tmp/transfer_{int(time.time())}.tmp"
+            
+            # Encode content
             encoded_content = base64.b64encode(file_content).decode('utf-8')
             
-            # Write the file using echo and base64 decode
-            write_cmd = f"echo '{encoded_content}' | base64 -d > {target_path}"
-            success, stdout, stderr = self.execute_command(node_name, write_cmd, use_chroot=False)
+            # Write the base64 content to a temporary file in the pod first
+            # Use a here-document to avoid command length limitations
+            print(f"  Creating temporary file with {len(encoded_content)} base64 characters...")
             
-            if success:
+            write_temp_cmd = f"""cat > {temp_file_in_pod} << 'EOF'
+{encoded_content}
+EOF"""
+            
+            success, stdout, stderr = self.execute_command(node_name, write_temp_cmd, use_chroot=False)
+            
+            if not success:
+                print(f"✗ Failed to write temporary file in pod: {stderr}")
+                return False
+            
+            print(f"✓ Temporary file created in pod: {temp_file_in_pod}")
+            
+            # Verify the temporary file was created and has content
+            temp_verify_cmd = f"ls -la {temp_file_in_pod} && wc -c < {temp_file_in_pod}"
+            temp_verify_success, temp_verify_output, temp_verify_error = self.execute_command(
+                node_name, temp_verify_cmd, use_chroot=False
+            )
+            
+            if temp_verify_success:
+                print(f"  Temporary file info: {temp_verify_output.strip()}")
+            else:
+                print(f"⚠ Warning: Could not verify temporary file: {temp_verify_error}")
+            
+            # Decode the temporary file and copy to target location
+            print(f"  Decoding and copying to target: {target_path}")
+            decode_cmd = f"base64 -d {temp_file_in_pod} > {target_path}"
+            success, stdout, stderr = self.execute_command(node_name, decode_cmd, use_chroot=False)
+            
+            if not success:
+                print(f"✗ Failed to decode and copy to target: {stderr}")
+                # Debug: check if the temp file still exists and has content
+                debug_cmd = f"ls -la {temp_file_in_pod}; head -c 100 {temp_file_in_pod}"
+                debug_success, debug_output, _ = self.execute_command(node_name, debug_cmd, use_chroot=False)
+                if debug_success:
+                    print(f"  Debug - temp file status: {debug_output}")
+                
+                # Clean up temp file
+                self.execute_command(node_name, f"rm -f {temp_file_in_pod}", use_chroot=False)
+                return False
+            
+            # Clean up temporary file
+            self.execute_command(node_name, f"rm -f {temp_file_in_pod}", use_chroot=False)
+            
+            # Verify the file was created and has content
+            verify_cmd = f"ls -la {target_path}"
+            success, stdout, stderr = self.execute_command(node_name, verify_cmd, use_chroot=False)
+            
+            if success and stdout:
                 print(f"✓ File copied to {target_path}")
+                print(f"  File info: {stdout.strip()}")
+                
+                # Additional verification: check file size and that it's not empty
+                size_cmd = f"wc -c < {target_path}"
+                size_success, size_output, size_error = self.execute_command(node_name, size_cmd, use_chroot=False)
+                if size_success and size_output:
+                    try:
+                        file_size = int(size_output.strip())
+                        print(f"  File size: {file_size} bytes")
+                        if file_size == 0:
+                            print(f"⚠ Warning: File appears to be empty!")
+                            return False
+                    except ValueError as e:
+                        print(f"⚠ Warning: Could not parse file size from output: '{size_output.strip()}'")
+                        print(f"  Size command error: {size_error}")
+                        # Continue anyway, the ls command above should have verified the file exists
+                else:
+                    print(f"⚠ Warning: Could not get file size: {size_error}")
+                
                 return True
             else:
-                print(f"✗ Failed to copy file: {stderr}")
+                print(f"✗ Failed to verify copied file: {stderr}")
                 return False
                 
         except Exception as e:
@@ -271,7 +363,7 @@ class KubernetesDebugPodManager:
     def copy_file_from_pod(self, node_name: str, remote_path: str, local_path: str, 
                           use_host_path: bool = True) -> bool:
         """
-        Copy a file from the debug pod to local machine.
+        Copy a file from the debug pod to local machine with support for large files.
         
         Args:
             node_name: Target node name
@@ -293,36 +385,117 @@ class KubernetesDebugPodManager:
             else:
                 source_path = remote_path
             
-            # Read the file using base64 encoding
-            read_cmd = f"base64 {source_path}"
-            success, stdout, stderr = self.execute_command(node_name, read_cmd, use_chroot=False)
+            # Check file size first
+            size_cmd = f"stat -c %s {source_path}"
+            size_success, size_stdout, size_stderr = self.execute_command(node_name, size_cmd, use_chroot=False, timeout=30)
             
-            if not success:
-                print(f"✗ Failed to read file from pod: {stderr}")
+            if not size_success:
+                print(f"✗ Failed to get file size: {size_stderr}")
                 return False
             
-            # Decode the base64 content
-            import base64
             try:
-                file_content = base64.b64decode(stdout.strip())
-            except Exception as e:
-                print(f"✗ Failed to decode file content: {e}")
+                file_size = int(size_stdout.strip())
+                print(f"File size: {file_size} bytes ({file_size / 1024 / 1024:.1f} MB)")
+            except ValueError:
+                print(f"✗ Invalid file size: {size_stdout}")
                 return False
             
-            # Create local directory if needed
-            local_dir = os.path.dirname(local_path)
-            if local_dir:
-                os.makedirs(local_dir, exist_ok=True)
-            
-            # Write the file locally
-            with open(local_path, 'wb') as f:
-                f.write(file_content)
-            
-            print(f"✓ File copied to {local_path}")
-            return True
+            # Use chunked download for files larger than 50MB
+            if file_size > 50 * 1024 * 1024:  # 50MB threshold
+                return self._copy_large_file_chunked(node_name, source_path, local_path, file_size)
+            else:
+                # Use original method for smaller files
+                return self._copy_small_file_base64(node_name, source_path, local_path)
             
         except Exception as e:
             print(f"✗ Error copying file from pod: {e}")
+            return False
+    
+    def _copy_small_file_base64(self, node_name: str, source_path: str, local_path: str) -> bool:
+        """Copy small files using base64 encoding."""
+        # Read the file using base64 encoding
+        read_cmd = f"base64 {source_path}"
+        success, stdout, stderr = self.execute_command(node_name, read_cmd, use_chroot=False, timeout=120)
+        
+        if not success:
+            print(f"✗ Failed to read file from pod: {stderr}")
+            return False
+        
+        # Decode the base64 content
+        import base64
+        try:
+            file_content = base64.b64decode(stdout.strip())
+        except Exception as e:
+            print(f"✗ Failed to decode file content: {e}")
+            return False
+        
+        # Create local directory if needed
+        local_dir = os.path.dirname(local_path)
+        if local_dir:
+            os.makedirs(local_dir, exist_ok=True)
+        
+        # Write the file locally
+        with open(local_path, 'wb') as f:
+            f.write(file_content)
+        
+        print(f"✓ File copied to {local_path}")
+        return True
+    
+    def _copy_large_file_chunked(self, node_name: str, source_path: str, local_path: str, file_size: int) -> bool:
+        """Copy large files using chunked reading to avoid memory issues."""
+        chunk_size = 1024 * 1024  # 1MB chunks
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
+        
+        print(f"Downloading large file in {total_chunks} chunks of {chunk_size // 1024}KB each...")
+        
+        # Create local directory if needed
+        local_dir = os.path.dirname(local_path)
+        if local_dir:
+            os.makedirs(local_dir, exist_ok=True)
+        
+        try:
+            with open(local_path, 'wb') as f:
+                for chunk_num in range(total_chunks):
+                    start_byte = chunk_num * chunk_size
+                    end_byte = min(start_byte + chunk_size - 1, file_size - 1)
+                    chunk_length = end_byte - start_byte + 1
+                    
+                    # Progress indicator
+                    progress = (chunk_num + 1) / total_chunks * 100
+                    print(f"  Chunk {chunk_num + 1}/{total_chunks} ({progress:.1f}%) - bytes {start_byte}-{end_byte}")
+                    
+                    # Read chunk using dd and base64
+                    dd_cmd = f"dd if={source_path} skip={start_byte} count={chunk_length} bs=1 2>/dev/null | base64"
+                    success, stdout, stderr = self.execute_command(node_name, dd_cmd, use_chroot=False, timeout=120)
+                    
+                    if not success:
+                        print(f"✗ Failed to read chunk {chunk_num + 1}: {stderr}")
+                        return False
+                    
+                    # Decode and write chunk
+                    import base64
+                    try:
+                        chunk_data = base64.b64decode(stdout.strip())
+                        f.write(chunk_data)
+                    except Exception as e:
+                        print(f"✗ Failed to decode chunk {chunk_num + 1}: {e}")
+                        return False
+            
+            # Verify file size
+            if os.path.exists(local_path):
+                local_size = os.path.getsize(local_path)
+                if local_size == file_size:
+                    print(f"✓ Large file successfully downloaded: {local_path} ({local_size} bytes)")
+                    return True
+                else:
+                    print(f"✗ File size mismatch: expected {file_size}, got {local_size}")
+                    return False
+            else:
+                print(f"✗ Local file not created: {local_path}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ Error during chunked download: {e}")
             return False
     
     def delete_debug_pod(self, node_name: str, pod_name: str = None) -> bool:
@@ -639,6 +812,17 @@ def setup_script_on_node(node_name, working_directory, local_script_path,
             # Only copy script if it doesn't exist
             if not script_exists:
                 print(f"Copying script to {node_name}...")
+                print(f"  Source: {local_script_path}")
+                print(f"  Target: {script_path} (host path)")
+                print(f"  Target in pod: /host{script_path}")
+                
+                # Verify local script exists and is readable
+                if not os.path.exists(local_script_path):
+                    print(f"✗ Local script file not found: {local_script_path}")
+                    return False
+                
+                local_size = os.path.getsize(local_script_path)
+                print(f"  Local file size: {local_size} bytes")
                 
                 # Copy the script to the node using our debug pod manager
                 copy_success = debug_manager.copy_file_to_pod(
@@ -650,6 +834,25 @@ def setup_script_on_node(node_name, working_directory, local_script_path,
                     return False
                 
                 print(f"✓ Script copied to {node_name}")
+                
+                # Additional verification: check if script exists and has correct size
+                verify_size_cmd = f"wc -c < {script_path}"
+                size_success, size_output, size_error = debug_manager.execute_command(
+                    node_name, verify_size_cmd, use_chroot=True, timeout=10
+                )
+                
+                if size_success and size_output:
+                    try:
+                        remote_size = int(size_output.strip())
+                        print(f"  Remote file size: {remote_size} bytes")
+                        if remote_size != local_size:
+                            print(f"⚠ Warning: File size mismatch! Local: {local_size}, Remote: {remote_size}")
+                    except ValueError as e:
+                        print(f"⚠ Warning: Could not parse remote file size from output: '{size_output.strip()}'")
+                        print(f"  Size verification error: {size_error}")
+                        print(f"  This suggests the script may not have been copied correctly")
+                else:
+                    print(f"⚠ Warning: Could not verify remote file size: {size_error}")
             
             # Set executable permissions if script is not executable
             if not script_executable:
@@ -665,20 +868,56 @@ def setup_script_on_node(node_name, working_directory, local_script_path,
                 
                 print(f"✓ Executable permissions set on {node_name}")
             
-            # Final verification
+            # Final verification with multiple checks
             print(f"Verifying script setup on {node_name}...")
+            
+            # Check 1: Verify script exists and permissions
             verify_success, verify_stdout, verify_stderr = debug_manager.execute_command(
                 node_name, f"ls -la {script_path}", use_chroot=True, timeout=30
             )
             
-            if verify_success:
-                print(f"✓ Script setup complete on {node_name}")
-                if verify_stdout:
-                    print(f"Final file info: {verify_stdout.strip()}")
-                return True
-            else:
+            if not verify_success:
                 print(f"✗ Script verification failed on {node_name}: {verify_stderr}")
                 return False
+            
+            print(f"✓ Script file exists on host:")
+            print(f"  {verify_stdout.strip()}")
+            
+            # Check 2: Verify script is executable
+            test_exec_success, test_exec_stdout, test_exec_stderr = debug_manager.execute_command(
+                node_name, f"test -x {script_path} && echo 'executable' || echo 'not executable'", use_chroot=True, timeout=10
+            )
+            
+            if test_exec_success and 'executable' in test_exec_stdout:
+                print(f"✓ Script is executable")
+            else:
+                print(f"⚠ Warning: Script may not be executable: {test_exec_stdout}")
+            
+            # Check 3: Verify script content is valid (not empty/corrupted)
+            size_check_success, size_check_stdout, size_check_stderr = debug_manager.execute_command(
+                node_name, f"wc -c < {script_path}", use_chroot=True, timeout=10
+            )
+            
+            if size_check_success and size_check_stdout:
+                try:
+                    script_size = int(size_check_stdout.strip())
+                    print(f"✓ Script size on host: {script_size} bytes")
+                    if script_size == 0:
+                        print(f"✗ Script appears to be empty on host!")
+                        return False
+                    elif script_size < 100:  # retis_in_container.sh should be much larger
+                        print(f"⚠ Warning: Script seems unusually small")
+                except ValueError as e:
+                    print(f"⚠ Warning: Could not parse script size from output: '{size_check_stdout.strip()}'")
+                    print(f"  Size check error: {size_check_stderr}")
+                    print(f"  This suggests the script file may not exist on the host")
+                    return False
+            else:
+                print(f"⚠ Warning: Could not get script size: {size_check_stderr}")
+                return False
+            
+            print(f"✓ Script setup complete on {node_name}")
+            return True
         
     except Exception as e:
         print(f"✗ Error setting up script on {node_name}: {e}")
@@ -834,66 +1073,85 @@ def run_retis_on_node(node_name, retis_image, working_directory, retis_args=None
                      debug_manager: KubernetesDebugPodManager = None, dry_run=False):
     """Run RETIS collection on a specific node using Kubernetes-native debug pod."""
     
-    # Set default retis_args if not provided (for backwards compatibility)
-    if retis_args is None:
-        retis_args = {
-            'output_file': 'events.json',
-            'allow_system_changes': True,
-            'ovs_track': True,
-            'stack': True,
-            'probe_stack': True,
-            'filter_packet': 'tcp port 8080 or tcp port 8081',
-            'retis_extra_args': '',
-            'retis_tag': 'v1.5.2'
-        }
-    
-    # Use custom command string if provided, otherwise build from retis_args
+    # retis_cmd_str is now mandatory (passed from args.retis_command)
     if retis_cmd_str is None:
-        # Build the retis collect command arguments
-        retis_cmd_args = ['collect']
-        
-        # Add output file
-        retis_cmd_args.extend(['-o', retis_args['output_file']])
-        
-        # Add boolean flags
-        if retis_args['allow_system_changes']:
-            retis_cmd_args.append('--allow-system-changes')
-        
-        if retis_args['ovs_track']:
-            retis_cmd_args.append('--ovs-track')
-        
-        if retis_args['stack']:
-            retis_cmd_args.append('--stack')
-        
-        if retis_args['probe_stack']:
-            retis_cmd_args.append('--probe-stack')
-        
-        # Add packet filter
-        if retis_args['filter_packet']:
-            retis_cmd_args.extend(['--filter-packet', f"'{retis_args['filter_packet']}'"])
-        
-        # Add any extra arguments
-        if retis_args['retis_extra_args']:
-            retis_cmd_args.extend(retis_args['retis_extra_args'].split())
-        
-        # Join all arguments
-        retis_cmd_str = ' '.join(retis_cmd_args)
-        print(f"Built RETIS command from parameters")
-    else:
-        print(f"Using custom RETIS command string")
+        raise ValueError("retis_cmd_str is required - should be passed from args.retis_command")
+    
+    # retis_args should contain minimal required info  
+    if retis_args is None:
+        raise ValueError("retis_args is required and should contain output_file and retis_tag")
+    
+    print(f"Using RETIS command: {retis_cmd_str}")
     
     # Construct the shell command that will be executed after 'sh -c'
     # Use full path to the script since we downloaded it to the working directory
-    shell_command = f"export RETIS_TAG={retis_args['retis_tag']}; export RETIS_IMAGE='{retis_image}'; {working_directory}/retis_in_container.sh {retis_cmd_str}"
     
-    # Construct the systemd-run command
-    systemd_command = f'systemd-run --unit="RETIS" --working-directory={working_directory} sh -c "{shell_command}"'
+    # Debug: Print the values being used
+    print(f"DEBUG: Raw RETIS_IMAGE value: '{retis_image}'")
+    print(f"DEBUG: Raw RETIS_TAG value: '{retis_args['retis_tag']}'")
+    
+    # Verify we're not accidentally using the old OpenShift registry
+    if 'image-registry.openshift-image-registry.svc' in retis_image:
+        print(f"⚠ WARNING: Still using OpenShift registry! This won't work on vanilla Kubernetes.")
+        print(f"   Consider using: --retis-image quay.io/retis/retis")
+    
+    # Check if the image already contains a tag (which would cause duplication)
+    if ':' in retis_image and retis_image.count(':') >= 1:
+        # Split the image into repo and tag parts
+        image_parts = retis_image.rsplit(':', 1)
+        if len(image_parts) == 2:
+            image_repo = image_parts[0]
+            existing_tag = image_parts[1]
+            
+            print(f"⚠ WARNING: RETIS image already contains a tag!")
+            print(f"   Image provided: {retis_image}")
+            print(f"   Repository: {image_repo}")
+            print(f"   Existing tag: {existing_tag}")
+            print(f"   Specified tag: {retis_args['retis_tag']}")
+            print(f"   This would create invalid reference: {retis_image}:{retis_args['retis_tag']}")
+            
+            # Auto-fix: use the repository part only
+            print(f"🔧 AUTO-FIX: Using repository part only: {image_repo}")
+            print(f"🔧 AUTO-FIX: Using tag: {retis_args['retis_tag']}")
+            retis_image = image_repo
+    
+    # Build shell command using a temporary script approach to avoid quote escaping issues
+    # Create a unique temporary script name
+    import time
+    temp_script = f"{working_directory}/retis_cmd_{int(time.time())}.sh"
+    
+    # Create the temporary script content
+    script_content = f"""#!/bin/bash
+export RETIS_TAG='{retis_args['retis_tag']}'
+export RETIS_IMAGE='{retis_image}'
+echo "RETIS Debug: IMAGE=$RETIS_IMAGE TAG=$RETIS_TAG FULL=$RETIS_IMAGE:$RETIS_TAG"
+{working_directory}/retis_in_container.sh {retis_cmd_str}
+"""
+    
+    # Create command to write the script and execute it
+    # Use double quotes to avoid conflicts with the here-document delimiter
+    # Escape backslashes, double quotes, AND dollar signs to prevent premature expansion
+    escaped_script_content = script_content.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+    shell_command = f'cat > {temp_script} << "RETIS_SCRIPT_EOF"\n{escaped_script_content}RETIS_SCRIPT_EOF\nchmod +x {temp_script} && {temp_script} && rm -f {temp_script}'
+    
+    # Construct the systemd-run command using double quotes
+    systemd_command = f'systemd-run --unit=RETIS --working-directory={working_directory} sh -c "{shell_command}"'
     
     print(f"\nRunning RETIS collection on node: {node_name}")
     print(f"Working directory: {working_directory}")
     print(f"RETIS Image: {retis_image}")
     print(f"RETIS Tag: {retis_args['retis_tag']}")
-    print(f"RETIS Arguments: {retis_cmd_str}")
+    print(f"Full container reference: {retis_image}:{retis_args['retis_tag']}")
+    print(f"RETIS Command: {retis_cmd_str}")
+    print(f"Temporary script: {temp_script}")
+    print(f"Script content (original):")
+    print("=" * 40)
+    print(script_content)
+    print("=" * 40)
+    print(f"Script content (escaped):")
+    print("=" * 40)
+    print(escaped_script_content)
+    print("=" * 40)
     print(f"DEBUG: Shell command: {shell_command}")
     print(f"DEBUG: Systemd command: {systemd_command}")
     
@@ -912,6 +1170,66 @@ def run_retis_on_node(node_name, retis_image, working_directory, retis_args=None
         with debug_manager.debug_pod_context(node_name) as pod_name:
             print(f"Executing RETIS collection command via debug pod...")
             
+            # First, verify the script exists on the host before running systemd-run
+            script_check_cmd = f"ls -la {working_directory}/retis_in_container.sh"
+            print(f"Verifying script exists on host: {script_check_cmd}")
+            
+            check_success, check_stdout, check_stderr = debug_manager.execute_command(
+                node_name, script_check_cmd, use_chroot=True, timeout=30
+            )
+            
+            # Also check the first few lines of the script to verify it downloaded correctly
+            if check_success:
+                script_head_cmd = f"head -20 {working_directory}/retis_in_container.sh"
+                head_success, head_stdout, head_stderr = debug_manager.execute_command(
+                    node_name, script_head_cmd, use_chroot=True, timeout=10
+                )
+                
+                if head_success:
+                    print(f"✓ Script content preview (first 20 lines):")
+                    print("=" * 50)
+                    print(head_stdout)
+                    print("=" * 50)
+                else:
+                    print(f"⚠ Warning: Could not read script content: {head_stderr}")
+            
+            # Verify image and tag values are reasonable
+            if not retis_image or retis_image.isspace():
+                print(f"✗ Error: RETIS_IMAGE is empty or whitespace!")
+                return False
+                
+            if not retis_args['retis_tag'] or retis_args['retis_tag'].isspace():
+                print(f"✗ Error: RETIS_TAG is empty or whitespace!")
+                return False
+                
+            # Check for problematic characters
+            if '"' in retis_image or '"' in retis_args['retis_tag']:
+                print(f"⚠ Warning: Image or tag contains double quotes, this might cause issues")
+                
+            print(f"✓ Image validation passed: {retis_image}:{retis_args['retis_tag']}")
+            
+            if not check_success:
+                print(f"✗ Script not found on host filesystem!")
+                print(f"Error: {check_stderr}")
+                print(f"Let's check what's in the working directory:")
+                
+                # Check what's actually in the working directory
+                ls_cmd = f"ls -la {working_directory}/"
+                ls_success, ls_stdout, ls_stderr = debug_manager.execute_command(
+                    node_name, ls_cmd, use_chroot=True, timeout=30
+                )
+                
+                if ls_success:
+                    print(f"Contents of {working_directory}:")
+                    print(ls_stdout)
+                else:
+                    print(f"Failed to list directory: {ls_stderr}")
+                
+                return False
+            else:
+                print(f"✓ Script verified on host:")
+                print(f"  {check_stdout.strip()}")
+            
             # Execute the systemd-run command
             success, stdout, stderr = debug_manager.execute_command(
                 node_name, systemd_command, use_chroot=True, timeout=300
@@ -929,50 +1247,93 @@ def run_retis_on_node(node_name, retis_image, working_directory, retis_args=None
                     print("Output:")
                     print(stdout)
             
-            # Check the status of the RETIS systemd unit
-            print(f"Checking RETIS systemd unit status on {node_name}...")
-            status_success, status_stdout, status_stderr = debug_manager.execute_command(
-                node_name, "systemctl status RETIS", use_chroot=True, timeout=60
+            # Check what happened to the RETIS collection
+            print(f"Checking RETIS execution results on {node_name}...")
+            
+            # Check systemd journal for RETIS logs (last 10 minutes)
+            print("Checking systemd journal for RETIS logs...")
+            journal_success, journal_stdout, journal_stderr = debug_manager.execute_command(
+                node_name, 'journalctl -u RETIS --since "10 minutes ago" --no-pager', use_chroot=True, timeout=60
             )
             
-            # Parse the status output to determine if the unit actually succeeded
             unit_status = "unknown"
             unit_failed = False
             
-            if status_stdout:
-                print("Status output:")
-                print(status_stdout)
+            if journal_stdout:
+                print("RETIS systemd journal logs:")
+                print(journal_stdout)
                 
-                # Look for key indicators in the status output
-                status_output = status_stdout.lower()
-                if "active: failed" in status_output or "failed" in status_output:
-                    unit_failed = True
+                # Look for success/failure indicators in journal
+                journal_output = journal_stdout.lower()
+                if "succeeded" in journal_output or "finished successfully" in journal_output:
+                    unit_status = "completed successfully"
+                elif "failed" in journal_output or "error" in journal_output:
                     unit_status = "failed"
-                elif "active: active" in status_output:
-                    unit_status = "running"
-                elif "active: inactive" in status_output and "exited" in status_output:
-                    # Check if it completed successfully (exit code 0)
-                    if "code=exited, status=0" in status_output:
-                        unit_status = "completed successfully"
+                    unit_failed = True
+            elif journal_stderr and "No entries" in journal_stderr:
+                print("No journal entries found for RETIS unit")
+            elif journal_stderr:
+                print(f"Journal error: {journal_stderr}")
+            
+            # Wait for the output file to be created with polling mechanism
+            output_file_path = f"{working_directory}/{retis_args['output_file']}"
+            print(f"Polling for output file: {output_file_path}")
+            
+            # Polling parameters
+            max_wait_time = 300  # 5 minutes maximum wait
+            poll_interval = 15   # Check every 15 seconds
+            polls_done = 0
+            max_polls = max_wait_time // poll_interval
+            
+            output_file_exists = False
+            for poll_attempt in range(max_polls):
+                polls_done += 1
+                print(f"  Poll attempt {polls_done}/{max_polls} (waiting {poll_interval}s between checks)...")
+                
+                file_success, file_stdout, file_stderr = debug_manager.execute_command(
+                    node_name, f'ls -la {output_file_path}', use_chroot=True, timeout=30
+                )
+                
+                if file_success and file_stdout and "No such file" not in file_stdout:
+                    print(f"✓ RETIS output file found after {polls_done * poll_interval}s:")
+                    print(file_stdout)
+                    output_file_exists = True
+                    # If we have the output file, that's a strong indicator of success
+                    if unit_status == "unknown":
+                        unit_status = "completed successfully (output file present)"
+                    break
+                else:
+                    if poll_attempt < max_polls - 1:  # Don't print on the last attempt
+                        print(f"    Output file not found yet, waiting {poll_interval}s...")
+                        time.sleep(poll_interval)
                     else:
-                        unit_status = "completed with errors"
-                        unit_failed = True
+                        print(f"✗ RETIS output file not found after {max_wait_time}s")
+                        if file_stderr:
+                            print(f"File check error: {file_stderr}")
+                        if unit_status == "unknown":
+                            unit_status = "likely failed (no output file after timeout)"
+                            unit_failed = True
             
-            if status_stderr:
-                print("Status error output:")
-                print(status_stderr)
-            
+            # Final status determination
             if unit_failed:
-                print(f"✗ RETIS systemd unit failed on {node_name} (status: {unit_status})")
+                print(f"✗ RETIS collection failed on {node_name} (status: {unit_status})")
                 return False
-            elif unit_status == "running":
-                print(f"✓ RETIS systemd unit is running on {node_name}")
-                return True
-            elif unit_status == "completed successfully":
-                print(f"✓ RETIS systemd unit completed successfully on {node_name}")
+            elif output_file_exists or "completed successfully" in unit_status:
+                print(f"✓ RETIS collection completed successfully on {node_name}")
                 return True
             else:
-                print(f"⚠ RETIS systemd unit status unclear on {node_name} (status: {unit_status})")
+                print(f"⚠ RETIS collection status unclear on {node_name} (status: {unit_status})")
+                
+                # As a last resort, check for any RETIS-related units
+                print("Checking for any RETIS-related systemd units...")
+                list_success, list_stdout, list_stderr = debug_manager.execute_command(
+                    node_name, 'systemctl list-units --all | grep -i retis', use_chroot=True, timeout=30
+                )
+                
+                if list_stdout and "RETIS" in list_stdout:
+                    print("Found RETIS-related units:")
+                    print(list_stdout)
+                
                 return False
         
     except Exception as e:
@@ -1058,6 +1419,7 @@ Examples:
   # Download results (execute normally)
   python3 arc.py --kubeconfig ~/.kube/config --download-results
   python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results --dry-run  # preview only
+  python3 arc.py --kubeconfig ~/.kube/config --output-file "mycap.pcap" --download-results  # download specific file type
   
   # Print RETIS events (no Kubernetes connection required, downloads results as arc_*_events.json)
   python3 arc.py --analyze                                              # auto-discover arc_*_events.json files
@@ -1086,8 +1448,8 @@ Examples:
     )
     parser.add_argument(
         '--retis-image',
-        help='RETIS container image to use (default: image-registry.openshift-image-registry.svc:5000/default/retis)',
-        default='image-registry.openshift-image-registry.svc:5000/default/retis',
+        help='RETIS container image repository to use (default: quay.io/retis/retis). Do NOT include tag - use --retis-tag instead.',
+        default='quay.io/retis/retis',
         type=str
     )
     parser.add_argument(
@@ -1129,75 +1491,20 @@ Examples:
     )
     parser.add_argument(
         '--download-results',
-        help='Download all events.json files from filtered nodes to local machine',
+        help='Download all output files from filtered nodes to local machine (use --output-file to specify filename pattern)',
         action='store_true'
     )
-    # RETIS collection configuration parameters
-    parser.add_argument(
-        '--output-file', '-o',
-        help='Output file name for RETIS collection (default: events.json)',
-        default='events.json',
-        type=str
-    )
-    parser.add_argument(
-        '--allow-system-changes',
-        help='Allow RETIS to make system changes (default: enabled)',
-        action='store_true',
-        default=True
-    )
-    parser.add_argument(
-        '--no-allow-system-changes',
-        help='Disable system changes for RETIS collection',
-        action='store_true'
-    )
-    parser.add_argument(
-        '--ovs-track',
-        help='Enable OVS tracking (default: enabled)',
-        action='store_true',
-        default=True
-    )
-    parser.add_argument(
-        '--no-ovs-track',
-        help='Disable OVS tracking',
-        action='store_true'
-    )
-    parser.add_argument(
-        '--stack',
-        help='Enable stack trace collection (default: enabled)',
-        action='store_true',
-        default=True
-    )
-    parser.add_argument(
-        '--no-stack',
-        help='Disable stack trace collection',
-        action='store_true'
-    )
-    parser.add_argument(
-        '--probe-stack',
-        help='Enable probe stack collection (default: enabled)',
-        action='store_true',
-        default=True
-    )
-    parser.add_argument(
-        '--no-probe-stack',
-        help='Disable probe stack collection',
-        action='store_true'
-    )
-    parser.add_argument(
-        '--filter-packet',
-        help='Packet filter expression (default: "tcp port 8080 or tcp port 8081")',
-        default='tcp port 8080 or tcp port 8081',
-        type=str
-    )
-    parser.add_argument(
-        '--retis-extra-args',
-        help='Additional arguments to pass to retis collect command',
-        default='',
-        type=str
-    )
+    # RETIS command configuration (mandatory for collection operations)
     parser.add_argument(
         '--retis-command',
-        help='Complete RETIS command string (overrides all other RETIS options)',
+        help='RETIS command string to execute. Must include "-o <filename>" parameter for status validation. Example: "collect -o events.json -f \\"tcp port 80\\""',
+        type=str
+    )
+    # Output file for utility operations (download-results)
+    parser.add_argument(
+        '--output-file', '-o',
+        help='Output file name for utility operations like --download-results (default: events.json). Use this to specify the filename pattern for files to be downloaded, e.g., "mycap.pcap"',
+        default='events.json',
         type=str
     )
     parser.add_argument(
@@ -1212,12 +1519,63 @@ Examples:
     )
     parser.add_argument(
         '--analysis-files',
-        help='Specific RETIS result files to read (space-separated). If not provided, will read all arc_*_events.json files in current directory',
+        help='Specific RETIS result files to read (space-separated). If not provided, will auto-discover arc_*_events.json files in current directory',
         nargs='*',
         type=str
     )
     
     args = parser.parse_args()
+    
+    # Determine if this is a RETIS collection operation or utility operation
+    is_utility_operation = (getattr(args, 'stop', False) or 
+                           getattr(args, 'reset_failed', False) or 
+                           getattr(args, 'download_results', False) or
+                           getattr(args, 'analyze', False))
+    
+    # Validate custom RETIS command early (before any expensive operations)
+    # Only required for RETIS collection operations, not utility operations
+    if not is_utility_operation:
+        if not hasattr(args, 'retis_command') or not args.retis_command:
+            print("❌ ERROR: --retis-command is required for RETIS collection operations")
+            print("   Example: --retis-command 'collect -o events.json -f \"tcp port 80\"'")
+            print("   Note: --retis-command is not needed for utility operations (--stop, --reset-failed, --download-results, --analyze)")
+            sys.exit(1)
+        
+        print(f"Validating RETIS command: {args.retis_command}")
+        
+        # Extract output file from custom command (mandatory for proper status checking)
+        import re
+        output_match = re.search(r'-o\s+([^\s]+)', args.retis_command)
+        if not output_match:
+            print("❌ ERROR: --retis-command must include '-o <filename>' parameter")
+            print("   Example: --retis-command 'collect -o mydata.json -f \"tcp port 80\"'")
+            print("   This is required for proper status checking and file validation.")
+            sys.exit(1)
+        
+        custom_output_file = output_match.group(1)
+        print(f"📄 Detected output file from command: {custom_output_file}")
+        print("✅ RETIS command validation passed")
+    else:
+        print(f"ℹ️  Utility operation detected - --retis-command not required")
+    
+    # Validate RETIS image format early (catch tag duplication issues)
+    if hasattr(args, 'retis_image') and ':' in args.retis_image:
+        image_parts = args.retis_image.rsplit(':', 1)
+        if len(image_parts) == 2:
+            image_repo = image_parts[0]
+            existing_tag = image_parts[1]
+            print(f"⚠ WARNING: --retis-image contains a tag which will cause issues!")
+            print(f"   You provided: --retis-image {args.retis_image}")
+            print(f"   This will create invalid reference: {args.retis_image}:{args.retis_tag}")
+            print(f"")
+            print(f"🔧 RECOMMENDATION: Use separate parameters:")
+            print(f"   --retis-image {image_repo}")
+            print(f"   --retis-tag {existing_tag}")
+            print(f"")
+            print(f"🔧 AUTO-FIXING: Using repository part only and keeping your specified tag")
+            args.retis_image = image_repo
+            print(f"   Final values: image={args.retis_image}, tag={args.retis_tag}")
+            print(f"")
     
     # Set dry-run behavior based on operation type
     # Main RETIS collection defaults to dry-run, utility operations execute normally
@@ -1233,15 +1591,8 @@ Examples:
         args.dry_run = True
     # For utility operations, keep the original --dry-run value (False by default)
     
-    # Process boolean flag conflicts
-    if args.no_allow_system_changes:
-        args.allow_system_changes = False
-    if args.no_ovs_track:
-        args.ovs_track = False
-    if args.no_stack:
-        args.stack = False
-    if args.no_probe_stack:
-        args.probe_stack = False
+    # Note: Boolean flag conflicts removed since individual RETIS arguments were removed
+    # All RETIS command configuration now handled via --retis-command
     
     # Validate arguments
     if args.stop and getattr(args, 'reset_failed', False):
@@ -1261,82 +1612,33 @@ Examples:
         return
     
     if args.stop:
-        if args.retis_image != 'image-registry.openshift-image-registry.svc:5000/default/retis':
+        if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --stop")
         if args.retis_tag != 'v1.5.2':
             print("Warning: --retis-tag is ignored when using --stop")
         if args.working_directory != '/var/tmp':
             print("Warning: --working-directory is ignored when using --stop")
-        # These retis-specific arguments are ignored during stop
-        ignored_args = []
-        if args.output_file != 'events.json':
-            ignored_args.append('--output-file')
-        if not args.allow_system_changes:
-            ignored_args.append('--no-allow-system-changes')
-        if not args.ovs_track:
-            ignored_args.append('--no-ovs-track')
-        if not args.stack:
-            ignored_args.append('--no-stack')
-        if not args.probe_stack:
-            ignored_args.append('--no-probe-stack')
-        if args.filter_packet != 'tcp port 8080 or tcp port 8081':
-            ignored_args.append('--filter-packet')
-        if args.retis_extra_args:
-            ignored_args.append('--retis-extra-args')
-        
-        if ignored_args:
-            print(f"Warning: RETIS collection arguments are ignored when using --stop: {', '.join(ignored_args)}")
+        # --retis-command is ignored during stop operations
+        print("Warning: --retis-command is ignored when using --stop")
     
     if getattr(args, 'reset_failed', False):
-        if args.retis_image != 'image-registry.openshift-image-registry.svc:5000/default/retis':
+        if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --reset-failed")
         if args.retis_tag != 'v1.5.2':
             print("Warning: --retis-tag is ignored when using --reset-failed")
         if args.working_directory != '/var/tmp':
             print("Warning: --working-directory is ignored when using --reset-failed")
-        # These retis-specific arguments are ignored during reset-failed
-        ignored_args = []
-        if args.output_file != 'events.json':
-            ignored_args.append('--output-file')
-        if not args.allow_system_changes:
-            ignored_args.append('--no-allow-system-changes')
-        if not args.ovs_track:
-            ignored_args.append('--no-ovs-track')
-        if not args.stack:
-            ignored_args.append('--no-stack')
-        if not args.probe_stack:
-            ignored_args.append('--no-probe-stack')
-        if args.filter_packet != 'tcp port 8080 or tcp port 8081':
-            ignored_args.append('--filter-packet')
-        if args.retis_extra_args:
-            ignored_args.append('--retis-extra-args')
-        
-        if ignored_args:
-            print(f"Warning: RETIS collection arguments are ignored when using --reset-failed: {', '.join(ignored_args)}")
+        # --retis-command is ignored during reset-failed operations
+        print("Warning: --retis-command is ignored when using --reset-failed")
     
     if getattr(args, 'download_results', False):
-        if args.retis_image != 'image-registry.openshift-image-registry.svc:5000/default/retis':
+        if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --download-results")
         if args.retis_tag != 'v1.5.2':
             print("Warning: --retis-tag is ignored when using --download-results")
-        # Note: --working-directory and --output-file are actually used by download-results
-        # These retis-specific arguments are ignored during download-results
-        ignored_args = []
-        if not args.allow_system_changes:
-            ignored_args.append('--no-allow-system-changes')
-        if not args.ovs_track:
-            ignored_args.append('--no-ovs-track')
-        if not args.stack:
-            ignored_args.append('--no-stack')
-        if not args.probe_stack:
-            ignored_args.append('--no-probe-stack')
-        if args.filter_packet != 'tcp port 8080 or tcp port 8081':
-            ignored_args.append('--filter-packet')
-        if args.retis_extra_args:
-            ignored_args.append('--retis-extra-args')
-        
-        if ignored_args:
-            print(f"Warning: RETIS collection arguments are ignored when using --download-results: {', '.join(ignored_args)}")
+        # Note: --working-directory is used by download-results to know where to find files
+        # --retis-command is ignored during download operations
+        print("Warning: --retis-command is ignored when using --download-results")
     
     # Validate that at least one filter is provided if the user wants to be specific
     if not args.node_filter and not args.workload_filter:
@@ -1671,43 +1973,22 @@ Examples:
         
         print(f"\n--- Script setup complete: {setup_success_count}/{len(nodes) + len(setup_failed_nodes)} nodes successful ---")
         
-        # --- Prepare RETIS arguments ---
+        # --- Prepare RETIS command (now mandatory) ---
+        print(f"Using RETIS command: {args.retis_command}")
+        
+        # Extract output file from command (we know it exists due to early validation)
+        import re
+        output_match = re.search(r'-o\s+([^\s]+)', args.retis_command)
+        output_file = output_match.group(1)  # Safe since we validated this early
+        
+        # Simplified retis_args containing only what we need for execution
         retis_args = {
-            'output_file': args.output_file,
-            'allow_system_changes': args.allow_system_changes,
-            'ovs_track': args.ovs_track,
-            'stack': args.stack,
-            'probe_stack': args.probe_stack,
-            'filter_packet': args.filter_packet,
-            'retis_extra_args': args.retis_extra_args,
+            'output_file': output_file,
             'retis_tag': args.retis_tag
         }
         
-        # Use custom RETIS command if provided
-        custom_retis_cmd = getattr(args, 'retis_command', None)
-        
-        # Warn if custom command is used with individual RETIS parameters
-        if custom_retis_cmd:
-            print(f"Using custom RETIS command: {custom_retis_cmd}")
-            ignored_args = []
-            if args.output_file != 'events.json':
-                ignored_args.append('--output-file')
-            if not args.allow_system_changes:
-                ignored_args.append('--no-allow-system-changes')
-            if not args.ovs_track:
-                ignored_args.append('--no-ovs-track')
-            if not args.stack:
-                ignored_args.append('--no-stack')
-            if not args.probe_stack:
-                ignored_args.append('--no-probe-stack')
-            if args.filter_packet != 'tcp port 8080 or tcp port 8081':
-                ignored_args.append('--filter-packet')
-            if args.retis_extra_args:
-                ignored_args.append('--retis-extra-args')
-            
-            if ignored_args:
-                print(f"Warning: Individual RETIS parameters are ignored when using --retis-command: {', '.join(ignored_args)}")
-                print("The custom command will be used as-is.")
+        # Use the provided RETIS command directly
+        custom_retis_cmd = args.retis_command
         
         # --- Run RETIS collection on each node ---
         if args.parallel:
