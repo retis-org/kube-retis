@@ -1,4 +1,4 @@
-# Automated RETIS Collection (ARC)
+# Kubernetes RETIS (kube-retis)
 
 A Python script for running RETIS network packet collection on Kubernetes worker nodes with advanced filtering capabilities using a modern, Kubernetes-native approach.
 
