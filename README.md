@@ -73,67 +73,67 @@ This tool automates the deployment and execution of RETIS (Real-time Traffic Ins
 
 ```bash
 # Preview RETIS collection (default dry-run mode)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'"
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'"
 
 # Actually execute RETIS collection (use --start)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 80'" --start
 
 # Filter nodes running specific workloads
-python3 arc.py --kubeconfig ~/.kube/config --workload-filter "ovn" --retis-command "collect -o network.json -f 'tcp'" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --workload-filter "ovn" --retis-command "collect -o network.json -f 'tcp'" --start
 
 # Combine both filters
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --workload-filter "networking" --retis-command "collect -o net.json -f 'tcp'" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --workload-filter "networking" --retis-command "collect -o net.json -f 'tcp'" --start
 
 # Use without kubeconfig argument (will prompt)
-python3 arc.py --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 443'" --start
+python3 kube-retis.py --node-filter "worker-2*" --retis-command "collect -o events.json -f 'tcp port 443'" --start
 ```
 
 ### Advanced Usage
 
 ```bash
 # Custom RETIS image and version (repository and tag specified separately)
-python3 arc.py --kubeconfig ~/.kube/config --retis-image "registry.example.com/retis" --retis-tag "v1.6.0" --retis-command "collect -o events.json -f 'tcp port 80'" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-image "registry.example.com/retis" --retis-tag "v1.6.0" --retis-command "collect -o events.json -f 'tcp port 80'" --start
 
 # Custom working directory
-python3 arc.py --kubeconfig ~/.kube/config --working-directory "/tmp/retis" --retis-command "collect -o events.json -f 'tcp'" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --working-directory "/tmp/retis" --retis-command "collect -o events.json -f 'tcp'" --start
 
 # Parallel execution on multiple nodes
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --parallel --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --parallel --start
 
 # Explicit dry run (redundant with default, but clear)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --dry-run
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --retis-command "collect -o events.json -f 'tcp'" --dry-run
 
 # Custom RETIS command (full control) - MUST include -o parameter
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
 
 # RETIS profile command (different from collect)
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
 
 # Utility operations (no --retis-command needed)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --stop
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --reset-failed
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results --output-file custom.json
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --stop
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --reset-failed
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --download-results --output-file custom.json
 ```
 
 ### Utility Operations (Execute Immediately)
 
 ```bash
 # Stop RETIS collection (executes immediately, no --start needed)
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --stop
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --stop
 
 # Stop with parallel execution
-python3 arc.py --kubeconfig ~/.kube/config --stop --parallel
+python3 kube-retis.py --kubeconfig ~/.kube/config --stop --parallel
 
 # Reset failed RETIS units
-python3 arc.py --kubeconfig ~/.kube/config --reset-failed
+python3 kube-retis.py --kubeconfig ~/.kube/config --reset-failed
 
 # Download all events.json files from nodes
-python3 arc.py --kubeconfig ~/.kube/config --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --download-results
 
 # Preview utility operations (use --dry-run)
-python3 arc.py --kubeconfig ~/.kube/config --stop --dry-run
-python3 arc.py --kubeconfig ~/.kube/config --download-results --dry-run
+python3 kube-retis.py --kubeconfig ~/.kube/config --stop --dry-run
+python3 kube-retis.py --kubeconfig ~/.kube/config --download-results --dry-run
 ```
 
 ## 📖 Command Line Arguments
@@ -231,17 +231,17 @@ Use `--dry-run` to:
 
 ### Example 1: Target Specific Worker Nodes
 ```bash
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-0[1-3]"
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-0[1-3]"
 ```
 
 ### Example 2: Find Nodes Running OVN Components
 ```bash
-python3 arc.py --kubeconfig ~/.kube/config --workload-filter "ovn-kubernetes"
+python3 kube-retis.py --kubeconfig ~/.kube/config --workload-filter "ovn-kubernetes"
 ```
 
 ### Example 3: Combined Filtering with Parallel Execution
 ```bash
-python3 arc.py \
+python3 kube-retis.py \
   --kubeconfig ~/.kube/config \
   --node-filter "compute" \
   --workload-filter "networking" \
@@ -251,17 +251,17 @@ python3 arc.py \
 
 ### Example 4: Stop RETIS on All Worker Nodes
 ```bash
-python3 arc.py --kubeconfig ~/.kube/config --stop --parallel
+python3 kube-retis.py --kubeconfig ~/.kube/config --stop --parallel
 ```
 
 ### Example 5: Download Results from Specific Nodes
 ```bash
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results
 ```
 
 ### Example 6: Custom RETIS Command
 ```bash
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o network-profile.json -t 60" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "profile -o network-profile.json -t 60" --start
 ```
 
 ## 🚀 Major Features
@@ -271,21 +271,21 @@ python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o network-p
 **RETIS Collection Operations** default to **dry-run mode** for safety:
 ```bash
 # Safe: Previews what would be executed
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*"
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*"
 
 # Explicit: Actually executes collection
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --start
 ```
 
 **Utility Operations** execute immediately as expected:
 ```bash
 # These execute immediately (no --start needed)
-python3 arc.py --kubeconfig ~/.kube/config --stop
-python3 arc.py --kubeconfig ~/.kube/config --reset-failed  
-python3 arc.py --kubeconfig ~/.kube/config --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --stop
+python3 kube-retis.py --kubeconfig ~/.kube/config --reset-failed  
+python3 kube-retis.py --kubeconfig ~/.kube/config --download-results
 
 # Use --dry-run to preview utility operations
-python3 arc.py --kubeconfig ~/.kube/config --stop --dry-run
+python3 kube-retis.py --kubeconfig ~/.kube/config --stop --dry-run
 ```
 
 ### 📥 Automated Results Download
@@ -294,13 +294,13 @@ Download all `events.json` files from filtered nodes with automatic naming:
 
 ```bash
 # Download from all nodes (default: events.json)
-python3 arc.py --kubeconfig ~/.kube/config --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --download-results
 
 # Download from specific nodes only
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results
 
 # Download specific output file name
-python3 arc.py --kubeconfig ~/.kube/config --output-file "trace.json" --download-results
+python3 kube-retis.py --kubeconfig ~/.kube/config --output-file "trace.json" --download-results
 ```
 
 **File Naming**: Files are saved as `{node-short-name}_{output-file}` to prevent overwrites:
@@ -314,13 +314,13 @@ Take full control over RETIS execution with `--retis-command`:
 
 ```bash
 # Custom collect command (must include -o parameter)
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
 
 # RETIS profile instead of collect
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
 
 # Complex command with multiple options
-python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o trace.json --allow-system-changes --filter-packet 'tcp port 443' --max-events 10000" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "collect -o trace.json --allow-system-changes --filter-packet 'tcp port 443' --max-events 10000" --start
 ```
 
 **Override Behavior**: When using `--retis-command`, individual RETIS parameters are ignored with warnings.
@@ -331,13 +331,13 @@ Control RETIS version with `--retis-tag`:
 
 ```bash
 # Use specific version (default: v1.5.2)
-python3 arc.py --kubeconfig ~/.kube/config --retis-tag "v1.6.0" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-tag "v1.6.0" --start
 
 # Use latest version
-python3 arc.py --kubeconfig ~/.kube/config --retis-tag "latest" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-tag "latest" --start
 
 # Use development version
-python3 arc.py --kubeconfig ~/.kube/config --retis-tag "main" --start
+python3 kube-retis.py --kubeconfig ~/.kube/config --retis-tag "main" --start
 ```
 
 ### 🔄 System Maintenance
@@ -346,13 +346,13 @@ Reset failed systemd units across nodes:
 
 ```bash
 # Reset failed units on all nodes
-python3 arc.py --kubeconfig ~/.kube/config --reset-failed
+python3 kube-retis.py --kubeconfig ~/.kube/config --reset-failed
 
 # Reset on specific nodes
-python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*" --reset-failed
+python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*" --reset-failed
 
 # Preview reset operation
-python3 arc.py --kubeconfig ~/.kube/config --reset-failed --dry-run
+python3 kube-retis.py --kubeconfig ~/.kube/config --reset-failed --dry-run
 ```
 
 ## 🔧 Technical Details

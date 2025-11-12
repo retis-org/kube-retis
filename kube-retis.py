@@ -1385,49 +1385,49 @@ def main():
         epilog="""
 Examples:
   # RETIS collection (runs in dry-run mode by default)
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-1"        # exact or substring match
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker*"         # wildcard pattern
-  python3 arc.py --kubeconfig /path/to/kubeconfig --workload-filter "ovn"
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "compute" --workload-filter "pod.*networking"
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-1"        # exact or substring match
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*"         # wildcard pattern
+  python3 kube-retis.py --kubeconfig /path/to/kubeconfig --workload-filter "ovn"
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "compute" --workload-filter "pod.*networking"
   
   # Actually execute RETIS collection (use --start)
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker.*" --start
-  python3 arc.py --kubeconfig ~/.kube/config --workload-filter "ovn" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker.*" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --workload-filter "ovn" --start
   
   # Custom RETIS parameters (dry-run by default)
-  python3 arc.py --kubeconfig ~/.kube/config --output-file trace.json --filter-packet "tcp port 443"
-  python3 arc.py --kubeconfig ~/.kube/config --no-ovs-track --no-stack --filter-packet "udp port 53"
-  python3 arc.py --kubeconfig ~/.kube/config --retis-extra-args "--max-events 10000"
+  python3 kube-retis.py --kubeconfig ~/.kube/config --output-file trace.json --filter-packet "tcp port 443"
+  python3 kube-retis.py --kubeconfig ~/.kube/config --no-ovs-track --no-stack --filter-packet "udp port 53"
+  python3 kube-retis.py --kubeconfig ~/.kube/config --retis-extra-args "--max-events 10000"
   
   # Custom RETIS command (overrides all other RETIS options)
-  python3 arc.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
-  python3 arc.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "collect -o custom.json --max-events 5000" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --retis-command "profile -o profile.json -t 30" --start
   
   # Infrastructure options
-  python3 arc.py --kubeconfig ~/.kube/config --retis-image "custom-registry/retis:latest" --start
-  python3 arc.py --kubeconfig ~/.kube/config --retis-tag "v1.6.0" --start
-  python3 arc.py --kubeconfig ~/.kube/config --working-directory /tmp --dry-run
+  python3 kube-retis.py --kubeconfig ~/.kube/config --retis-image "custom-registry/retis:latest" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --retis-tag "v1.6.0" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --working-directory /tmp --dry-run
   
   # Stop operations (execute normally)
-  python3 arc.py --kubeconfig ~/.kube/config --stop --parallel
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker" --stop --dry-run  # preview only
+  python3 kube-retis.py --kubeconfig ~/.kube/config --stop --parallel
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker" --stop --dry-run  # preview only
   
   # Reset failed operations (execute normally)
-  python3 arc.py --kubeconfig ~/.kube/config --reset-failed --parallel
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker" --reset-failed --dry-run  # preview only
+  python3 kube-retis.py --kubeconfig ~/.kube/config --reset-failed --parallel
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker" --reset-failed --dry-run  # preview only
   
   # Download results (execute normally)
-  python3 arc.py --kubeconfig ~/.kube/config --download-results
-  python3 arc.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results --dry-run  # preview only
-  python3 arc.py --kubeconfig ~/.kube/config --output-file "mycap.pcap" --download-results  # download specific file type
+  python3 kube-retis.py --kubeconfig ~/.kube/config --download-results
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-2*" --download-results --dry-run  # preview only
+  python3 kube-retis.py --kubeconfig ~/.kube/config --output-file "mycap.pcap" --download-results  # download specific file type
   
   # Print RETIS events (no Kubernetes connection required, downloads results as arc_*_events.json)
-  python3 arc.py --analyze                                              # auto-discover arc_*_events.json files
-  python3 arc.py --analyze --analysis-files arc_worker-1_events.json arc_worker-2_events.json
-  python3 arc.py --analyze --analysis-files retis.data
+  python3 kube-retis.py --analyze                                              # auto-discover arc_*_events.json files
+  python3 kube-retis.py --analyze --analysis-files arc_worker-1_events.json arc_worker-2_events.json
+  python3 kube-retis.py --analyze --analysis-files retis.data
   
   # Interactive mode
-  python3 arc.py  # Will prompt for kubeconfig path
+  python3 kube-retis.py  # Will prompt for kubeconfig path
         """
     )
     
