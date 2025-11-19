@@ -36,8 +36,8 @@ This tool automates the deployment and execution of RETIS (Real-time Traffic Ins
 
 1. **Clone or download the script:**
    ```bash
-   git clone <repository-url>
-   cd automated_retis_collection
+   git clone https://github.com/retis-org/kube-retis.git
+   cd kube-retis
    ```
 
 2. **Create and activate a virtual environment (recommended):**
