@@ -1514,7 +1514,7 @@ Examples:
     )
     parser.add_argument(
         '--skip-tls-verification',
-        help='Skip TLS certificate verification when connecting to Kubernetes API',
+        help='Skip TLS certificate verification when connecting to Kubernetes API (useful for OpenShift clusters with self-signed certificates)',
         action='store_true'
     )
     parser.add_argument(
@@ -1774,7 +1774,7 @@ Examples:
             print(f"✗ Failed to load kubeconfig: {e}")
             return
 
-    # --- Handle TLS verification settings ---
+    # --- Handle TLS verification settings (must be done before creating API client) ---
     if args.skip_tls_verification:
         print("Warning: Skipping TLS certificate verification. This is insecure and should only be used for testing.")
         
@@ -1802,8 +1802,47 @@ Examples:
         version = core_v1.get_api_resources()
         print("✓ Successfully connected to Kubernetes cluster.")
     except Exception as e:
+        error_str = str(e).lower()
+        error_full = str(e)
         print(f"✗ Failed to connect to Kubernetes cluster: {e}")
-        print("Please verify your kubeconfig is valid and the cluster is accessible.")
+        
+        # Check for common certificate/TLS/connection errors
+        is_tls_error = any(keyword in error_str for keyword in [
+            'certificate', 'ssl', 'tls', 'verify', 'connection reset', 
+            'connection aborted', 'max retries', 'protocolerror', 
+            'connectionrefused', 'timeout'
+        ])
+        
+        # Check if it's a MaxRetryError (common with OpenShift)
+        is_retry_error = 'max retries' in error_str or 'maxretryerror' in error_str
+        
+        if is_tls_error or is_retry_error:
+            print("\n" + "="*70)
+            print("⚠️  TLS/Certificate Verification Issue Detected")
+            print("="*70)
+            print("\nThis error commonly occurs with OpenShift clusters that use")
+            print("self-signed certificates. The Python Kubernetes client is stricter")
+            print("than the 'oc' CLI about certificate validation.")
+            print("\n💡 Solution: Use the --skip-tls-verification flag:")
+            print("\n  python3 kube-retis.py --skip-tls-verification \\")
+            print("    --node-filter \"worker-1\" \\")
+            print("    --retis-command \"collect -o events.json\"")
+            print("\nNote: This flag disables SSL certificate verification.")
+            print("Only use this if you trust the cluster's certificate authority.")
+            print("="*70)
+        else:
+            print("\nPlease verify:")
+            print("  - Your kubeconfig is valid and the cluster is accessible")
+            print("  - You have proper RBAC permissions")
+            print("  - Network connectivity to the cluster")
+            
+            # Check if 'oc' command is available
+            try:
+                result = subprocess.run(['which', 'oc'], capture_output=True, timeout=2)
+                if result.returncode == 0:
+                    print("  - Try running 'oc get nodes' to verify your OpenShift context works")
+            except:
+                pass  # Ignore if 'which' command fails
         return
 
     # --- Get nodes using Kubernetes API ---
