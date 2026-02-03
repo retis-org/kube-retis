@@ -1459,8 +1459,8 @@ Examples:
     )
     parser.add_argument(
         '--retis-tag',
-        help='RETIS version tag to use (default: v1.5.2)',
-        default='v1.5.2',
+        help='RETIS version tag to use (default: latest)',
+        default='latest',
         type=str
     )
     parser.add_argument(
@@ -1619,7 +1619,7 @@ Examples:
     if args.stop:
         if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --stop")
-        if args.retis_tag != 'v1.5.2':
+        if args.retis_tag != 'latest':
             print("Warning: --retis-tag is ignored when using --stop")
         if args.working_directory != '/var/tmp':
             print("Warning: --working-directory is ignored when using --stop")
@@ -1629,7 +1629,7 @@ Examples:
     if getattr(args, 'reset_failed', False):
         if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --reset-failed")
-        if args.retis_tag != 'v1.5.2':
+        if args.retis_tag != 'latest':
             print("Warning: --retis-tag is ignored when using --reset-failed")
         if args.working_directory != '/var/tmp':
             print("Warning: --working-directory is ignored when using --reset-failed")
@@ -1639,7 +1639,7 @@ Examples:
     if getattr(args, 'download_results', False):
         if args.retis_image != 'quay.io/retis/retis':
             print("Warning: --retis-image is ignored when using --download-results")
-        if args.retis_tag != 'v1.5.2':
+        if args.retis_tag != 'latest':
             print("Warning: --retis-tag is ignored when using --download-results")
         # Note: --working-directory is used by download-results to know where to find files
         # --retis-command is ignored during download operations
