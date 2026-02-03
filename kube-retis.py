@@ -565,27 +565,27 @@ EOF"""
                 self.delete_debug_pod(node_name, pod_name)
 
 def get_kubeconfig_path(args):
-    """Get the kubeconfig path from arguments or user input."""
+    """Get the kubeconfig path from arguments or return None to use default context.
+    
+    Returns:
+        str or None: Path to kubeconfig file if provided, None to use default context
+    """
     if args.kubeconfig:
         kubeconfig_path = args.kubeconfig
-        print(f"Using kubeconfig from command line argument: {kubeconfig_path}")
-    else:
-        print("No kubeconfig path provided via --kubeconfig argument.")
-        kubeconfig_path = input("Please enter the path to your kubeconfig file: ").strip()
-        if not kubeconfig_path:
-            print("No kubeconfig path provided. Exiting.")
+        # Expand user home directory if needed
+        kubeconfig_path = os.path.expanduser(kubeconfig_path)
+        
+        # Check if file exists
+        if not os.path.exists(kubeconfig_path):
+            print(f"Kubeconfig file not found at: {kubeconfig_path}")
+            print("Please verify the file path exists.")
             sys.exit(1)
-    
-    # Expand user home directory if needed
-    kubeconfig_path = os.path.expanduser(kubeconfig_path)
-    
-    # Check if file exists
-    if not os.path.exists(kubeconfig_path):
-        print(f"Kubeconfig file not found at: {kubeconfig_path}")
-        print("Please verify the file path exists.")
-        sys.exit(1)
-    
-    return kubeconfig_path
+        
+        print(f"Using kubeconfig from command line argument: {kubeconfig_path}")
+        return kubeconfig_path
+    else:
+        # Return None to indicate we should use default context
+        return None
 
 def get_nodes_from_kubernetes(api_instance, name_filter=None, workload_filter=None):
     """Get nodes using Kubernetes client API with optional filtering."""
@@ -1384,15 +1384,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # RETIS collection (runs in dry-run mode by default)
+  # Using current Kubernetes/OpenShift context (after 'oc login' or 'kubectl config use-context')
+  python3 kube-retis.py --node-filter "worker-1" --retis-command "collect -o events.json"  # uses current context
+  python3 kube-retis.py --workload-filter "ovn" --retis-command "collect -o events.json" --start  # uses current context
+  
+  # RETIS collection with explicit kubeconfig (runs in dry-run mode by default)
   python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker-1"        # exact or substring match
   python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker*"         # wildcard pattern
   python3 kube-retis.py --kubeconfig /path/to/kubeconfig --workload-filter "ovn"
   python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "compute" --workload-filter "pod.*networking"
   
   # Actually execute RETIS collection (use --start)
-  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker.*" --start
-  python3 kube-retis.py --kubeconfig ~/.kube/config --workload-filter "ovn" --start
+  python3 kube-retis.py --node-filter "worker.*" --retis-command "collect -o events.json" --start  # uses current context
+  python3 kube-retis.py --kubeconfig ~/.kube/config --node-filter "worker.*" --retis-command "collect -o events.json" --start
+  python3 kube-retis.py --kubeconfig ~/.kube/config --workload-filter "ovn" --retis-command "collect -o events.json" --start
   
   # Custom RETIS parameters (dry-run by default)
   python3 kube-retis.py --kubeconfig ~/.kube/config --output-file trace.json --filter-packet "tcp port 443"
@@ -1426,14 +1431,14 @@ Examples:
   python3 kube-retis.py --analyze --analysis-files arc_worker-1_events.json arc_worker-2_events.json
   python3 kube-retis.py --analyze --analysis-files retis.data
   
-  # Interactive mode
-  python3 kube-retis.py  # Will prompt for kubeconfig path
+  # Interactive mode (will use current context or prompt if not found)
+  python3 kube-retis.py --retis-command "collect -o events.json"  # uses current context if available
         """
     )
     
     parser.add_argument(
         '--kubeconfig', '-k',
-        help='Path to the kubeconfig file (will prompt if not provided)',
+        help='Path to the kubeconfig file (optional - will use current Kubernetes/OpenShift context from KUBECONFIG env var or ~/.kube/config if not provided)',
         type=str
     )
     parser.add_argument(
@@ -1683,33 +1688,90 @@ Examples:
             
         return
 
-    # Get kubeconfig path
+    # Get kubeconfig path (None means use default context)
     kubeconfig_path = get_kubeconfig_path(args)
 
     # --- Load Kubernetes Configuration ---
+    config_loaded = False
+    
+    # Try to load in-cluster config first
     try:
-        # Try to load in-cluster config first
         config.load_incluster_config()
-        print("Loaded in-cluster Kubernetes configuration.")
+        print("✓ Loaded in-cluster Kubernetes configuration.")
+        config_loaded = True
     except config.ConfigException:
-        try:
+        pass  # Not running in-cluster, continue to kubeconfig loading
+    
+    if not config_loaded:
+        if kubeconfig_path:
             # Use the specified kubeconfig file path
-            config.load_kube_config(config_file=kubeconfig_path)
-            print(f"Loaded kubeconfig from: {kubeconfig_path}")
-        except config.ConfigException as e:
-            print(f"Could not load kubeconfig from {kubeconfig_path}")
-            print(f"Error: {e}")
             try:
-                # Fallback to default kube-config file location
-                config.load_kube_config()
-                print("Loaded default kube-config.")
-            except config.ConfigException:
-                print("Could not locate a valid kubeconfig file or in-cluster config.")
-                print("Please ensure your kubeconfig file exists and is properly configured.")
+                config.load_kube_config(config_file=kubeconfig_path)
+                print(f"✓ Loaded kubeconfig from: {kubeconfig_path}")
+                config_loaded = True
+            except config.ConfigException as e:
+                print(f"✗ Could not load kubeconfig from {kubeconfig_path}")
+                print(f"Error: {e}")
+            except FileNotFoundError:
+                print(f"✗ Kubeconfig file not found at: {kubeconfig_path}")
+                print("Please verify the file path exists.")
                 return
-        except FileNotFoundError:
+        else:
+            # Try to load from default kubeconfig location (KUBECONFIG env var or ~/.kube/config)
+            # This will use the current context from 'oc login' or 'kubectl config use-context'
+            try:
+                # Check if default kubeconfig exists
+                default_kubeconfig = os.environ.get('KUBECONFIG')
+                if not default_kubeconfig:
+                    default_kubeconfig = os.path.expanduser('~/.kube/config')
+                
+                if os.path.exists(default_kubeconfig):
+                    config.load_kube_config()
+                    print(f"✓ Loaded Kubernetes configuration from current context")
+                    print(f"  Using kubeconfig: {default_kubeconfig}")
+                    # Try to show current context (optional - yaml might not be available)
+                    try:
+                        import yaml
+                        with open(default_kubeconfig, 'r') as f:
+                            kubeconfig_data = yaml.safe_load(f)
+                            current_context = kubeconfig_data.get('current-context', 'unknown')
+                            if current_context != 'unknown':
+                                print(f"  Current context: {current_context}")
+                    except ImportError:
+                        # PyYAML not available, skip context display
+                        pass
+                    except Exception:
+                        # Other errors reading context, skip
+                        pass
+                    config_loaded = True
+                else:
+                    print(f"✗ Default kubeconfig not found at: {default_kubeconfig}")
+            except config.ConfigException as e:
+                print(f"✗ Could not load default kubeconfig")
+                print(f"Error: {e}")
+    
+    if not config_loaded:
+        # Last resort: prompt user for kubeconfig path
+        print("\nCould not locate a valid kubeconfig file or in-cluster config.")
+        print("Please ensure you have:")
+        print("  - Run 'oc login' or 'kubectl config use-context' to set up your context, OR")
+        print("  - Provide a kubeconfig file with --kubeconfig")
+        
+        kubeconfig_path = input("\nEnter the path to your kubeconfig file (or press Enter to exit): ").strip()
+        if not kubeconfig_path:
+            print("No kubeconfig path provided. Exiting.")
+            return
+        
+        kubeconfig_path = os.path.expanduser(kubeconfig_path)
+        if not os.path.exists(kubeconfig_path):
             print(f"Kubeconfig file not found at: {kubeconfig_path}")
-            print("Please verify the file path exists.")
+            return
+        
+        try:
+            config.load_kube_config(config_file=kubeconfig_path)
+            print(f"✓ Loaded kubeconfig from: {kubeconfig_path}")
+        except Exception as e:
+            print(f"✗ Failed to load kubeconfig: {e}")
             return
 
     # --- Handle TLS verification settings ---
